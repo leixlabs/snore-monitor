@@ -1,0 +1,123 @@
+# snore-monitor example configuration (TECH_SPEC §11).
+#
+# Install path: /etc/snore-monitor/config.toml
+# An alternative path can be selected with the SNORE_MONITOR_CONFIG environment
+# variable, which is how the systemd unit and development runs point at a file.
+# The configuration is read once at startup; every change requires a restart.
+#
+# Validation is strict and field-level: an unknown key, a missing section or an
+# out-of-range value fails startup with the offending key named. There is no
+# silent fallback to another value (TECH_SPEC §11).
+# `tests/config_example.rs` parses and validates this exact file, so it cannot
+# drift away from the validator.
+#
+# Paths are absolute and deployment-specific: the defaults below assume the
+# recording directory is a separate USB storage mount. Adjust both paths on the
+# target device before starting the service.
+
+[server]
+# T0.1 decision: the shipped default listens on loopback only. Set 0.0.0.0 to
+# reach the Portal from a phone on the same trusted LAN — see the threat model
+# in README.md. Never expose this to the public internet.
+bind_address = "127.0.0.1"
+port = 8080
+# HTTP worker threads, 1-8. The audio path is separate and never waits on HTTP.
+http_threads = 2
+# IANA timezone used to turn ?date=YYYY-MM-DD into a UTC range. Empty means
+# "use the host's local timezone", which is the right choice for a single-home
+# deployment (T0.1 decision).
+timezone = ""
+
+[audio]
+# ALSA card name. Empty means "use the only USB capture device"; if several are
+# present, startup fails instead of guessing. A concrete example:
+# alsa_device = "hw:1,0"
+alsa_device = ""
+# Requested capture rate. Must be one of 16000, 32000, 44100, 48000, 96000
+# (TECH_SPEC §5.1). If the device cannot deliver it, negotiation falls back to
+# 48 kHz then 44.1 kHz, and the actual rate is recorded per segment.
+preferred_rate_hz = 16000
+# 1 or 2 channels. The recorder always stores every channel; the detector
+# analyses only `mono_channel_index`.
+channels = 1
+# Only S16_LE is supported for capture and recording.
+format = "S16_LE"
+# ALSA period (callback block) and buffer sizes in milliseconds.
+period_ms = 10
+buffer_ms = 200
+# Segment rotation is by stored frame count, not on the hour: one hour at 16 kHz
+# mono. Must keep a segment below 4 GiB (rate x channels x 2 B x seconds).
+segment_duration_seconds = 3600
+# Channel the detector listens to; must be < channels.
+mono_channel_index = 0
+# SPSC capture ring size. Must be at least 2 periods, so is every queue below.
+capture_ring_ms = 500
+recording_queue_ms = 2000
+detection_queue_ms = 1000
+# A gap is registered only when adjacent block timestamps differ by more than
+# this; smaller jitter is normal ALSA behaviour.
+gap_tolerance_ms = 20
+# A single gap longer than this forces a segment rotation.
+gap_rotate_seconds = 5
+# How often the open WAV header is rewritten and fdatasync'd.
+header_flush_interval_seconds = 30
+# SIGTERM drain budget. On timeout the current recording is left as a .partial
+# for the startup recovery scan instead of being completed.
+shutdown_timeout_seconds = 10
+
+[detector]
+# Fixed at 16000 for the MVP; any other value is a validation error.
+detection_rate_hz = 16000
+# Frame length and hop. 10 ms at 16 kHz is 160 samples.
+frame_ms = 10
+# Snore band. Must stay below the 8 kHz Nyquist limit, with low < high.
+band_low_hz = 80.0
+band_high_hz = 1500.0
+# A frame is "active" when its level exceeds max(absolute_floor_dbfs,
+# noise_floor_dbfs + noise_margin_db).
+absolute_floor_dbfs = -50.0
+noise_margin_db = 8.0
+# A frame is "snore-like" when the energy in the band dominates and the band
+# level exceeds band_noise_floor_dbfs + band_margin_db.
+band_margin_db = 6.0
+band_ratio_min = 0.35
+# Noise-floor percentile estimator: window length, percentile (1-50) and the
+# number of frames before the floor is trusted (must be <= the window).
+noise_floor_window_seconds = 30
+noise_floor_percentile = 20
+noise_floor_min_seconds = 10
+# A gap longer than this clears the histograms and re-warms the floor.
+noise_floor_reset_gap_seconds = 60
+# A candidate freezes the histogram window; after this long it force-resumes so
+# a sustained noise source cannot pin the floor forever.
+noise_freeze_max_seconds = 30
+# Frames after a reset that do not count as hits, while the IIR chain settles.
+filter_warmup_ms = 100
+# Onset needs attack_min_hits hits inside the last attack_window_frames frames
+# (must satisfy 1 <= attack_min_hits <= attack_window_frames).
+attack_window_frames = 5
+attack_min_hits = 3
+# Consecutive non-hit frames that end a candidate (50 frames = 500 ms).
+hangover_frames = 50
+# Shortest event kept, measured after merging; shorter ones are discarded and
+# counted. Must be less than max_event_seconds * 1000.
+min_event_ms = 200
+# How long a finished candidate waits to merge with a following onset.
+merge_gap_ms = 800
+# A candidate this long is emitted and immediately restarted with continued=1.
+max_event_seconds = 15
+
+[storage]
+# Both paths must be absolute. Put recording_dir on the USB storage and give the
+# service user write access to it; see README.md.
+recording_dir = "/mnt/snore-monitor/recordings"
+database_path = "/var/lib/snore-monitor/app.db"
+# Hard ceiling for recordings (20 GiB) and the target reached by deleting the
+# oldest complete segments (19 GiB); target must be less than max.
+recording_max_bytes = 21474836480
+recording_cleanup_target_bytes = 20401094656
+# Free-space floor kept for SQLite/OS work: 512 MiB.
+recording_reserve_bytes = 536870912
+# T0.1 decision: retention also runs periodically, not only at startup and when
+# a segment completes.
+retention_check_interval_seconds = 60

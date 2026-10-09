@@ -175,6 +175,12 @@ pub struct Metrics {
     pub deleted_segments: AtomicU64,
     pub missing_segments: AtomicU64,
 
+    /// Whether the system wall clock is currently trusted. The Pi 3B has no RTC,
+    /// so until NTP has settled `Utc::now()` is meaningless and segments recorded
+    /// in that window must not claim `time_quality=synced` (§4.3). Defaults to
+    /// `false`: an unprobed clock is reported as untrusted, never assumed good.
+    pub time_synced: AtomicBool,
+
     // --- dsp cost ---
     pub dsp_block_time: TimingStats,
 
@@ -201,6 +207,44 @@ impl Metrics {
 
     pub fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    pub fn set_time_synced(&self, synced: bool) {
+        self.time_synced.store(synced, Ordering::Relaxed);
+    }
+
+    pub fn time_synced(&self) -> bool {
+        self.time_synced.load(Ordering::Relaxed)
+    }
+
+    /// Probes whether the host wall clock is trustworthy right now (§4.3).
+    ///
+    /// On Linux this asks the kernel via `adjtimex` whether the clock is
+    /// synchronised. Anywhere else, and on any probe failure, the answer is
+    /// `false`: a clock we cannot vouch for is reported as untrusted rather than
+    /// optimistically assumed correct. Callers store the result with
+    /// [`Metrics::set_time_synced`].
+    pub fn probe_time_synced() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            const STA_UNSYNC: libc::c_int = 0x0040;
+            const STA_NANO: libc::c_int = 0x2000;
+            let mut buf: libc::timex = unsafe { std::mem::zeroed() };
+            buf.modes = STA_NANO;
+            // SAFETY: `adjtimex` only reads/writes the `timex` we pass by pointer.
+            let rc = unsafe { libc::adjtimex(&mut buf) };
+            if rc < 0 {
+                return false;
+            }
+            // `STA_UNSYNC` set means the kernel is not disciplined to a reference.
+            buf.status & STA_UNSYNC == 0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // No equivalent portable probe; report untrusted so nothing claims a
+            // calibrated timestamp on a platform we have not validated.
+            false
+        }
     }
 
     pub fn set_detector_state(&self, state: DetectorState) {

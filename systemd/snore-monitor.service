@@ -1,0 +1,74 @@
+# systemd unit for snore-monitor (tasks.md T7.1, TECH_SPEC §10).
+#
+# Install to /etc/systemd/system/snore-monitor.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now snore-monitor
+#
+# The service never runs as root and has no ambient capabilities: it only opens
+# the ALSA capture device, its configuration file, the SQLite database and the
+# recordings directory. Everything else on the device stays unreadable to it.
+
+[Unit]
+Description=Snore monitor (USB microphone recording and detection)
+Documentation=file:///usr/local/share/snore-monitor/README.md
+# The recordings live on external storage. Requiring its mount makes systemd hold
+# this unit until the disk is actually mounted, instead of starting and silently
+# filling the root filesystem when the USB device has not appeared yet. The mount
+# unit name is derived from the mount point: replace `mnt-snore\x2dmonitor.mount`
+# if you use a different path (see README.md, "USB storage is not mounted").
+RequiresMountsFor=/mnt/snore-monitor
+After=local-fs.target sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated unprivileged account, created by the install steps in README.md:
+#   sudo useradd --system --home /var/lib/snore-monitor --shell /usr/sbin/nologin snore-monitor
+User=snore-monitor
+Group=snore-monitor
+# Never root, and no way to gain privileges later.
+NoNewPrivileges=yes
+
+# Configuration is passed explicitly rather than relying on the built-in default
+# path, so a deployment mistake is visible in `systemctl cat`.
+Environment=SNORE_MONITOR_CONFIG=/etc/snore-monitor/config.toml
+# Refuse to start when the storage is not mounted: without this the service would
+# write recordings to the root filesystem under the (empty) mount point and lose
+# them on reboot. Failing loudly keeps the problem visible in `systemctl status`
+# and in the journal.
+#
+# `mountpoint --quiet` returns non-zero for "not a mount point" and for a missing
+# path alike, which is the right answer in both cases. Adjust the path if
+# storage.recording_dir in the configuration points somewhere else.
+ExecStartPre=/usr/bin/mountpoint --quiet /mnt/snore-monitor
+ExecStart=/usr/local/bin/snore-monitor
+
+# Files the service creates are group-readable at most; the recordings and the
+# database stay private to the service account.
+UMask=0027
+
+# stdout/stderr are captured by journald; the service logs no audio content
+# (TECH_SPEC §12).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=snore-monitor
+
+# Restart on any failure, but keep a crash loop visible instead of hammering the
+# storage: 5 attempts within 5 minutes, then stop and alert.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# SIGTERM starts the orderly drain (stop capture, flush the recorder, finish
+# events, drain the database writer). shutdown_timeout_seconds in the config
+# bounds it; if it expires the current segment stays a recoverable .partial.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# The database directory is the only other writable location. systemd creates it
+# if the package did not, which keeps a fresh install working.
+StateDirectory=snore-monitor
+
+[Install]
+WantedBy=multi-user.target

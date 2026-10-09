@@ -417,6 +417,17 @@ impl Database {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Error::from)
     }
 
+    /// Every segment row, in start order. Used by the startup recovery scan to
+    /// reconcile the database against the files actually on disk; it deliberately
+    /// is not filtered by status, since a crashed run can leave any status behind.
+    pub fn all_segments(&self) -> Result<Vec<SegmentRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM recording_segments ORDER BY started_at_utc,id")?;
+        let rows = stmt.query_map([], map_segment)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Error::from)
+    }
+
     pub fn mark_segment_status(&self, id: &str, status: SegmentStatus) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE recording_segments SET status=?2 WHERE id=?1",

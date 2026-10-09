@@ -19,3 +19,6 @@ pub mod retention;
 pub mod detector;
 pub mod db_writer;
 pub mod audio_capture;
+pub mod dispatcher;
+pub mod http_server;
+pub mod recovery;

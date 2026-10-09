@@ -1248,7 +1248,9 @@ dependencies = [
  "chrono-tz",
  "clap",
  "cpal",
+ "futures-util",
  "hound",
+ "http-body-util",
  "libc",
  "rusqlite",
  "serde",
@@ -1257,6 +1259,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
