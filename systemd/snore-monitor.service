@@ -28,6 +28,18 @@ User=snore-monitor
 Group=snore-monitor
 # Never root, and no way to gain privileges later.
 NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The audio devices must remain visible for ALSA; do not enable PrivateDevices.
+ReadWritePaths=/mnt/snore-monitor
 
 # Configuration is passed explicitly rather than relying on the built-in default
 # path, so a deployment mistake is visible in `systemctl cat`.

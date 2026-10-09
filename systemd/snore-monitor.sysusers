@@ -1,0 +1,26 @@
+# systemd-sysusers snippet for snore-monitor (TECH_SPEC §10, T7.1).
+#
+# Install location: /usr/lib/sysusers.d/snore-monitor.conf (system) or
+# /etc/sysusers.d/snore-monitor.conf (override). Run `systemd-sysusers`
+# after install (the package post-install / Makefile install target should
+# already do this; see README.md).
+#
+# The directive below creates a system user and group named
+# "snore-monitor", with a locked password (no interactive login) and a
+# fixed UID/GID range. Adjust UID/GID to match the deployment's site
+# policy; keeping them fixed makes ownership of recordings and the SQLite
+# database file deterministic across reinstalls.
+
+u snore-monitor - "Snore Monitor service user" /var/lib/snore-monitor /usr/sbin/nologin
+g snore-monitor -
+
+# Notes:
+#   - The home directory /var/lib/snore-monitor is created by tmpfiles.d
+#     (see snore-monitor.tmpfiles) and chowned to snore-monitor.
+#   - The recordings directory on USB must be chowned manually after the
+#     mount is created, because sysusers cannot reach arbitrary mount
+#     points reliably during first boot.
+#   - Do NOT add the user to `audio` or `disk` groups; access to /dev/snd
+#     and USB devices comes from the systemd unit's DeviceAllow= lines
+#     (and, if needed, a udev rule that sets ACLs on /dev/snd/* for the
+#     snore-monitor user).

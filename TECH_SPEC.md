@@ -84,6 +84,7 @@ Background retention worker: 完整片段轮转、上限检查、最旧文件回
 - 先写 `.partial`，以 64 KiB 批次顺序追加 PCM；每 `header_flush_interval_seconds`（默认 30 s）回写一次 RIFF/data 长度并 `fdatasync`，使异常中断最多丢失约该时长，且头部与已落盘数据一致。关闭时更新 RIFF/data 长度，`fdatasync`，原子 rename 为 `.wav`，再提交 DB 状态 complete。WAV classic RIFF 4 GiB 上限；切片时长和采样率必须确保小于 4 GiB，超限提前轮转。
 - 事件偏移以原始录音 sample frame 为基准，可由检测时间映射换算。页面播放通过 HTTP Range seek，无需把音频读进内存。
 - 服务异常退出的 partial 标记 interrupted，不得标为 complete。启动恢复扫描：对 `.partial` 按 `block_align` 向下取整截掉尾部不完整帧，并按实际文件大小修正头部，校验通过后重命名为 `.wav`，DB 置 `interrupted`，可回放但 Portal 显示“异常中断”；无法验证头部与数据一致的 `.partial` 保持原样、不公开，并在状态页告警。恢复策略不得假称其尾段一定完整。
+- 崩溃一致性（rename 与 DB `complete` 之间崩溃）：孤儿 `.wav`（文件存在、DB 无行）由启动恢复扫描创建对应 `recording_segments` 行，`status=complete`，`time_quality=unsynced`，状态页告警；DB 有行无文件则置 `status=missing`。`missing` 进入条件：恢复扫描发现文件路径不可访问；退出条件：不自动退出，人工处理后由恢复扫描重新评估或人工更新行。`interrupted` / `missing` 段的 gap 信息可能不完整（异常退出下未提交的事务会丢），Portal 需相应提示。
 
 ### 4.3 时间线、缺口与分段协调
 
@@ -107,7 +108,7 @@ Background retention worker: 完整片段轮转、上限检查、最旧文件回
   | `stream_rebuild` | 重建 stream（含 USB 拔插） | 重建前后单调时钟差 |
 
   估算不得使用累计时钟比较：USB 麦克风时钟与系统时钟有漂移（数十 ppm 即约 0.2 s/小时），只做相邻块差分。若目标 Pi 上 CPAL/ALSA 不能提供可靠的捕获时间戳，gap 检测降级为仅依赖 error callback 和溢出计数，`estimate_source='counter'`/`'unknown'`，状态页显示 `gap_detection_limited=true`，不得声称无缺口。此项须在 Pi 上实测（见第 13 节）。
-- `detector_drop`（检测队列满）只影响检测，不影响 WAV，不写入 `audio_gaps`；仅计数、写日志（含 segment 与偏移），并触发检测器重置（5.4）。**MVP 不持久化检测盲区，Portal 无法显示“该时段检测器未工作”，这是已知限制。**
+- `detector_drop`（检测队列满）只影响检测，不影响 WAV，不写入 `audio_gaps`；仅计数、写日志（含 segment 与偏移），并触发检测器重置（5.4）。**MVP 不持久化检测盲区，Portal 无法显示“该时段检测器未工作”，这是已知限制（T0.1 已确认接受）。**
 
 **时钟与 UTC**
 
@@ -267,9 +268,10 @@ Rust 单元测试使用确定性 PCM fixture：静音、正弦音、不同频带
 
 - `recording_max_bytes` 默认 20 GiB；`recording_cleanup_target_bytes` 默认 19 GiB；`recording_reserve_bytes` 默认 512 MiB，配置要求 target < max。
 - 文件大小仅统计 recordings 根目录下 WAV/partial 录音；DB/日志独立，不计入音频配额。实际文件系统 free space 另行检查。
-- 每片段完成后、进程启动恢复扫描时检查总量。若 >max，按开始时间升序删除 complete 文件，直到 <=target。当前写入片段和 partial 不由 retention 删除。
+- 容量回收的触发时机（T0.1）：**片段完成后**、**启动恢复扫描后**、以及按 `storage.retention_check_interval_seconds`（默认 60 s）的**周期检查**。任一触发点检查当前总量：若 >max，按开始时间升序删除 complete 文件，直到 <=target。当前写入片段和 partial 不由 retention 删除。写入路径上若检测到文件系统 free space 低于 `recording_reserve_bytes`，先触发一次清理；清理后仍低于 reserve 则**先停止录音**并明确告警，不静默丢样本、不写根分区。
 - 删除前校验规范化路径仍在 recordings 根目录下，DB 状态和文件 id 匹配。删除成功才将 segment 标记 deleted；事件元数据/人工标记继续保留，音频 API 对删除录音返回 410，Portal 显示“录音已过期”。
 - 删除失败则日志记录并尝试下一个最旧的 complete；仍超限时 `storage_pressure=true`。free space 低于 reserve 且清理无效时停止录音并明确告警。
+- 崩溃恢复扫描对账：孤儿 `.wav`（文件存在、DB 无行）创建对应行 `status=complete`；DB 有行无文件置 `status=missing`（语义见 §4.2）。
 
 ## 7. 数据模型（SQLite）
 
@@ -335,7 +337,8 @@ WAL、外键、busy timeout，schema 版本用 `PRAGMA user_version`。DB 操作
 - 音频 Range 细节：支持 `bytes=a-b`、`bytes=a-`、`bytes=-n`；多段 Range 不支持，直接返回完整 200（按 RFC 允许）；所有响应带 `Accept-Ranges: bytes`、`Content-Length`，支持 `HEAD`。`recording` 状态的 `.partial` 不提供播放（409）。`complete`/`interrupted` 段文件定长不再变化，可安全返回 `ETag`（如 `segment_id-size_bytes`）。响应体总字节数以 DB `size_bytes` 与实际文件大小一致为前提，不一致则标记 `missing`/告警。
 - 事件和段的 JSON 对外时间均为 UTC RFC 3339，并给出 `offset_frames` 和 `capture_rate_hz`；客户端不得用 `started_at_utc` 差值推算播放位置（gap 会造成偏差），必须用 offset。
 - 参数严格校验、SQL 参数绑定、文件路径不得由请求拼接。只允许同源 CORS。
-- MVP 无认证，限可信局域网，不做公网端口映射；HTTP API 不提供 start/stop 控制接口。
+- 日期与时区（T0.1）：`?date=YYYY-MM-DD` 表示“该时区下的日历日”，时区取配置 `[server] timezone`（IANA 名；留空使用设备本地时区）。查询转为 UTC 半开区间 `[start_of_day_utc, start_of_next_day_utc)`；跨午夜段若与之相交即返回，不按“属于哪个本地日历日”二次过滤。`server.timezone` 非空时必须能被 `chrono-tz` 解析为 IANA 名，否则启动失败。
+- MVP 无认证，限可信局域网，不做公网端口映射；HTTP API 不提供 start/stop 控制接口。`server.bind_address` 默认 `127.0.0.1`（仅本机访问，T0.1）；LAN 部署需手动修改配置并**不要映射到公网**。
 
 ## 9. Portal UI
 
@@ -400,9 +403,10 @@ WAL、外键、busy timeout，schema 版本用 `PRAGMA user_version`。DB 操作
 
 ```toml
 [server]
-bind_address = "0.0.0.0"
+bind_address = "127.0.0.1"     # 默认 loopback；LAN 部署需手动放开，不要映射到公网（T0.1）
 port = 8080
 http_threads = 2
+timezone = ""                  # IANA 名；留空使用设备本地时区（T0.1）
 
 [audio]
 alsa_device = ""             # 唯一 USB capture 设备可自动选；多设备必须明确指定
@@ -449,9 +453,10 @@ database_path = "/var/lib/snore-monitor/app.db"
 recording_max_bytes = 21474836480
 recording_cleanup_target_bytes = 20401094656
 recording_reserve_bytes = 536870912
+retention_check_interval_seconds = 60    # 容量回收周期检查间隔（T0.1）
 ```
 
-配置校验：所有路径绝对路径；存储 target < max；period/buffer 正值；检测频带在 Nyquist（8 kHz）以下且 `band_low_hz < band_high_hz`；HTTP threads 1–8；`detection_rate_hz` 必须为 16000；`mono_channel_index < channels`；`channels` 为 1–2；`attack_min_hits ≤ attack_window_frames`，`hangover_frames ≥ 1`，`max_event_seconds * 1000 > min_event_ms`，`noise_floor_min_seconds ≤ noise_floor_window_seconds`；`noise_floor_percentile` ∈ [1, 50]；队列/ring 不小于 2 个 period；用户配置采样率必须在 5.1 支持表内且由设备测试支持，否则按 documented fallback 或失败，不能静默改配置。`segment_duration_seconds` 必须使单段大小 < 4 GiB（`rate × channels × 2 × seconds`）。
+配置校验：所有路径绝对路径；存储 target < max；period/buffer 正值；检测频带在 Nyquist（8 kHz）以下且 `band_low_hz < band_high_hz`；HTTP threads 1–8；`detection_rate_hz` 必须为 16000；`mono_channel_index < channels`；`channels` 为 1–2；`attack_min_hits ≤ attack_window_frames`，`hangover_frames ≥ 1`，`max_event_seconds * 1000 > min_event_ms`，`noise_floor_min_seconds ≤ noise_floor_window_seconds`；`noise_floor_percentile` ∈ [1, 50]；队列/ring 不小于 2 个 period；用户配置采样率必须在 5.1 支持表内且由设备测试支持，否则按 documented fallback 或失败，不能静默改配置。`segment_duration_seconds` 必须使单段大小 < 4 GiB（`rate × channels × 2 × seconds`）。`server.timezone` 非空时必须能被 `chrono-tz` 解析为 IANA 名；`storage.retention_check_interval_seconds` > 0。
 
 ## 12. 健康状态和日志
 
