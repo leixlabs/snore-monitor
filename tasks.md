@@ -19,6 +19,37 @@
 | M3 | 阶段 5–6 | 手机/桌面浏览器可看时间轴、回放、跳转、审核 |
 | M4 | 阶段 7–8 | systemd 自启，通过 8 小时实测和故障注入，输出验收报告 |
 
+## 进度快照（实现期记录）
+
+> 本节由实现过程维护；`TECH_SPEC.md` 仍是权威依据。勾选表示该条目已实现并有自动化测试覆盖。任何涉及真实硬件的结论（T0.2、T8.x，以及 §3/§13 的实测门槛）在 Raspberry Pi 3B 上验证前不得视为完成。
+
+| 任务 | 状态 | 说明 |
+|---|---|---|
+| T0.1 | 部分 | 时区、回收周期、`bind_address` 默认 `127.0.0.1`、崩溃一致性、检测盲区不持久化均已在配置与代码中确定；**规格回写待补** |
+| T0.2 | 待 Pi 实测 | 需要目标板与 USB 麦克风 |
+| T1.1 | 部分 | Cargo 工程与目录已建立；`config.example.toml`、`README.md` 待补 |
+| T1.2 | 部分 | 全部 §11 校验已实现并有字段级错误；逐条正反例测试与示例配置校验待补 |
+| T1.3 | 部分 | 有界队列、SPSC capture ring、指标计数器完成；journald 日志装配待补 |
+| T1.4 | 未开始 | 交叉编译与 CI |
+| T2.1–T2.6 | 完成 | 通道选择、精确有理比重采样、逐帧特征、噪声底、状态机、不连续重置与偏移映射 |
+| T2.7 | 未开始 | `detect-wav` 离线工具 |
+| T2.8 | 部分 | 确定性 fixture 与回归用例已建；单帧耗时基准待补 |
+| T3.1–T3.3 | 完成（待 Pi 实测） | 设备协商、CPAL 采集线程、时间线模块；真实设备行为需 T8.1 验证 |
+| T3.4 | 进行中 | Dispatcher |
+| T3.5 | 部分 | WAV 写入、header 回写、原子 rename、4 GiB 守卫完成；磁盘满/写盘落后的队列联动随 T3.4 |
+| T3.6 | 部分 | `.partial` 截尾修头与重命名完成；orphan / `missing` 对账随 T3.4 |
+| T3.7–T3.8 | 进行中 | 检测线程集成、优雅退出 |
+| T4.1–T4.3 | 完成 | SQLite 迁移与约束、DB writer、容量回收 |
+| T5.1–T5.6 | 进行中 | HTTP API 与 Range 音频 |
+| T6.1–T6.5 | 未开始 | Portal |
+| T7.1–T7.2 | 未开始 | systemd 与安装文档 |
+| T8.1–T8.6 | 待 Pi 实测 | 验收门槛 |
+
+### 已记录的实现偏离
+
+- **重采样器**：§10 建议 `rubato`，但 §5.1 要求**精确有理数比**，而 `rubato` 的预分配 API 以 `f64` 表示比例，无法精确表达 44100→16000（441:160）。改为自实现 windowed-sinc 多相 FIR（Kaiser β=8，每相 64 抽头），比例即归约后的整数对 `L:M`，群延迟为解析值。§5.1 的两项指标已用测量测试验证：通带 0–4 kHz 波动 ≤ ±0.5 dB、14.5–15.9 kHz 折返衰减 ≥ 60 dB，五种采集率全部通过。
+- **多相滤波器组**：`src/dsp.rs` 另含帧特征与噪声底；`src/detector.rs` 为检测管线与状态机，二者按 §5.2/§5.3 分层而非合并为单一文件。
+
 ## 依赖总览
 
 ```mermaid
@@ -81,16 +112,16 @@ flowchart TD
 
 - [ ] 按 §10 目录创建 `Cargo.toml`、`src/` 各模块空壳（含 `dispatcher.rs`、`timeline.rs`）、`web/`、`tests/`、`config.example.toml`、`README.md`。
 - [ ] 只启用所需 crate features；release profile：`strip`、`opt-level` 待 T8 实测定。
-- [ ] 提交 `Cargo.lock`。
+- [x] 提交 `Cargo.lock`。
 
 完成标准：`cargo build` 和 `cargo test` 在开发机通过。
 
 ### T1.2 配置加载与校验 — M
 依赖：T1.1
 
-- [ ] 解析 §11 的全部配置节（含 T0.1 新增项），路径默认 `/etc/snore-monitor/config.toml`，`SNORE_MONITOR_CONFIG` 覆盖。
-- [ ] 实现 §11 所列全部校验（Nyquist、`detection_rate_hz == 16000`、`mono_channel_index < channels`、`attack_min_hits ≤ attack_window_frames`、单段 < 4 GiB、队列不小于 2 个 period 等）。
-- [ ] 校验失败给出明确的字段级错误信息；不静默回退。
+- [x] 解析 §11 的全部配置节（含 T0.1 新增项），路径默认 `/etc/snore-monitor/config.toml`，`SNORE_MONITOR_CONFIG` 覆盖。
+- [x] 实现 §11 所列全部校验（Nyquist、`detection_rate_hz == 16000`、`mono_channel_index < channels`、`attack_min_hits ≤ attack_window_frames`、单段 < 4 GiB、队列不小于 2 个 period 等）。
+- [x] 校验失败给出明确的字段级错误信息；不静默回退。
 
 测试：每条校验各一个正例和反例；示例配置能通过校验。
 
@@ -98,9 +129,9 @@ flowchart TD
 依赖：T1.1
 
 - [ ] 统一错误类型与日志（journald 友好；不记录波形内容，§12）。
-- [ ] `bounded_queue.rs`：预分配、有界、SPSC，支持“音频槽 + 控制槽”两类容量（§4.3 控制消息永不丢弃）；高水位统计。
-- [ ] `capture ring`（SPSC）：callback 内无分配、无锁等待，满时只累加溢出计数。
-- [ ] 指标计数器集合（原子量），供 `/status` 使用（§12 字段）。
+- [x] `bounded_queue.rs`：预分配、有界、SPSC，支持“音频槽 + 控制槽”两类容量（§4.3 控制消息永不丢弃）；高水位统计。
+- [x] `capture ring`（SPSC）：callback 内无分配、无锁等待，满时只累加溢出计数。
+- [x] 指标计数器集合（原子量），供 `/status` 使用（§12 字段）。
 
 测试：满队列行为、控制槽预留、跨线程压力测试（多生产者不允许；单生产单消费顺序正确）。
 
@@ -117,53 +148,53 @@ flowchart TD
 ### T2.1 样本格式转换与通道选择 — S
 依赖：T1.1
 
-- [ ] 反交织，取 `mono_channel_index`，S16→f32（`/32768.0`）。
-- [ ] 预分配缓冲，跨块可变长输入。
+- [x] 反交织，取 `mono_channel_index`，S16→f32（`/32768.0`）。
+- [x] 预分配缓冲，跨块可变长输入。
 
 测试：单/双通道、通道索引越界报错、数值精确。
 
 ### T2.2 重采样器 — M
 依赖：T0.2、T2.1
 
-- [ ] 支持 16/32/44.1/48/96 kHz → 16 kHz（§5.1 表）；16 kHz 直通。
-- [ ] 精确有理比，预分配，状态跨块保持；对固定输入 chunk 的 crate 用累积缓冲适配，不丢尾不补零。
-- [ ] 暴露 `resampler_delay_in_frames`。
+- [x] 支持 16/32/44.1/48/96 kHz → 16 kHz（§5.1 表）；16 kHz 直通。
+- [x] 精确有理比，预分配，状态跨块保持；对固定输入 chunk 的 crate 用累积缓冲适配，不丢尾不补零。
+- [x] 暴露 `resampler_delay_in_frames`。
 
 测试：输出长度/比例精确；同一信号不同分块输出一致；混叠抑制 ≥ 60 dB（14.5–15.9 kHz 输入）；通带 0–4 kHz 波动 ≤ ±0.5 dB。
 
 ### T2.3 滤波器与逐帧特征 — M
 依赖：T2.1
 
-- [ ] DC blocker（含重置时的初始化规则）、80 Hz 高通 + 1500 Hz 低通 biquad（系数用 RBJ/双线性变换生成）。
-- [ ] 10 ms 组帧（环形缓冲，无逐帧分配，不跨 gap 拼帧）。
-- [ ] 每帧：`level_dbfs`、`band_rms_dbfs`、`band_ratio`、`peak`（§5.2 数值下限和 ε）。
+- [x] DC blocker（含重置时的初始化规则）、80 Hz 高通 + 1500 Hz 低通 biquad（系数用 RBJ/双线性变换生成）。
+- [x] 10 ms 组帧（环形缓冲，无逐帧分配，不跨 gap 拼帧）。
+- [x] 每帧：`level_dbfs`、`band_rms_dbfs`、`band_ratio`、`peak`（§5.2 数值下限和 ε）。
 
 测试：已知幅度正弦的 RMS/dBFS；转折频率约 −3 dB ±0.5 dB、40 Hz 处衰减 ≥ 11 dB；跨块状态连续；静音输入不产生 NaN。
 
 ### T2.4 噪声底估计 — M
 依赖：T2.3
 
-- [ ] 宽带与带内两套 100 桶直方图（−100…0 dBFS，clamp），3000 帧环形窗口，每 100 ms 取 20% 分位。
-- [ ] 预热（`noise_floor_min_seconds`）、冻结与强制解冻（`noise_freeze_max_seconds`）、长/短 gap 的保留/清空策略。
+- [x] 宽带与带内两套 100 桶直方图（−100…0 dBFS，clamp），3000 帧环形窗口，每 100 ms 取 20% 分位。
+- [x] 预热（`noise_floor_min_seconds`）、冻结与强制解冻（`noise_freeze_max_seconds`）、长/短 gap 的保留/清空策略。
 
 测试：分位数手算对照；预热期无命中；持续噪声 30 s 后解冻并上升；范围外值 clamp。
 
 ### T2.5 候选状态机 — L
 依赖：T2.3、T2.4
 
-- [ ] `warming_up / IDLE / CANDIDATE / PENDING` 状态与全部转移（§5.3）：attack 窗口、hangover、合并窗口、合并后最短时长判定、`max_event_seconds` 切分并 `continued=1`。
-- [ ] 强制关闭路径与 `end_reason`。
-- [ ] 事件特征统计与 `rule_score`（含 `null` 条件）。
-- [ ] 滤波预热 `filter_warmup_ms` 期间不产生命中。
+- [x] `warming_up / IDLE / CANDIDATE / PENDING` 状态与全部转移（§5.3）：attack 窗口、hangover、合并窗口、合并后最短时长判定、`max_event_seconds` 切分并 `continued=1`。
+- [x] 强制关闭路径与 `end_reason`。
+- [x] 事件特征统计与 `rule_score`（含 `null` 条件）。
+- [x] 滤波预热 `filter_warmup_ms` 期间不产生命中。
 
 测试：合成 fixture 覆盖静音、阶跃、短脉冲、周期调制音、风扇式持续噪声；合并边界（799/800/801 ms）；max 时长切分；各 `end_reason`。
 
 ### T2.6 不连续与重置 + 偏移映射 — M
 依赖：T2.2、T2.5
 
-- [ ] §5.4 五步重置流程，输入为 `Gap` / `SegmentStart(格式变化)` / `detector_drop` / watchdog 重启。
-- [ ] 帧→已存储输入偏移映射公式（含 `anchor_in_offset` 与重采样延迟补偿）。
-- [ ] 正常段轮转不重置 DSP 状态，只关闭候选。
+- [x] §5.4 五步重置流程，输入为 `Gap` / `SegmentStart(格式变化)` / `detector_drop` / watchdog 重启。
+- [x] 帧→已存储输入偏移映射公式（含 `anchor_in_offset` 与重采样延迟补偿）。
+- [x] 正常段轮转不重置 DSP 状态，只关闭候选。
 
 测试：非 16 kHz 采集下事件起止偏移与真值误差 ≤ 10 ms；注入 gap 后无跨 gap 事件；轮转后噪声底与滤波状态连续。
 
@@ -180,7 +211,7 @@ flowchart TD
 ### T2.8 DSP 测试夹具与回归 — M
 依赖：T2.5
 
-- [ ] 确定性 PCM fixture 生成器（§5.5 列表）；固定随机种子。
+- [x] 确定性 PCM fixture 生成器（§5.5 列表）；固定随机种子。
 - [ ] 回归用例集覆盖 §5.5 全部验证项。
 - [ ] DSP 单帧处理耗时基准（为 Pi 上 `< 10%` CPU 目标提供依据）。
 
@@ -193,26 +224,26 @@ flowchart TD
 ### T3.1 音频设备探测与协商 — M
 依赖：T1.2、T0.2
 
-- [ ] 枚举 USB capture 设备；多设备且未指定 `alsa_device` 时启动失败。
-- [ ] 按优先级协商 format/rate/channels（配置值 → 48 kHz → 44.1 kHz；仅 S16_LE；1–2 通道），全部失败则带设备信息启动失败。
-- [ ] 记录实际 period/buffer。
+- [x] 枚举 USB capture 设备；多设备且未指定 `alsa_device` 时启动失败。
+- [x] 按优先级协商 format/rate/channels（配置值 → 48 kHz → 44.1 kHz；仅 S16_LE；1–2 通道），全部失败则带设备信息启动失败。
+- [x] 记录实际 period/buffer。
 
 测试：用 mock 配置列表测协商顺序和失败路径；Pi 上手工验证真实设备。
 
 ### T3.2 CPAL 采集线程 — M
 依赖：T1.3、T3.1
 
-- [ ] callback 只复制 PCM 到 capture ring，不执行其他逻辑；记录块捕获时间戳。
-- [ ] error callback 转为 gap 事件；ring 溢出累计 `capture_ring_overflow_frames`。
+- [x] callback 只复制 PCM 到 capture ring，不执行其他逻辑；记录块捕获时间戳。
+- [x] error callback 转为 gap 事件；ring 溢出累计 `capture_ring_overflow_frames`。
 - [ ] 重建 stream：1 s 起指数退避，上限 30 s；拔出期间 `microphone=disconnected`。
 
 ### T3.3 时间线模块 `timeline.rs` — M
 依赖：T1.1
 
-- [ ] 单调时钟 ↔ UTC 锚点（启动及每 60 s），`time_synced`、`boot_id`。
-- [ ] `wall(o)` 映射函数（含 gap 累加）。
-- [ ] 相邻块差分的 gap 估算，阈值 `gap_tolerance_ms`；降级为 `counter/unknown` 的路径。
-- [ ] 壁钟阶跃检测（> 1 s）与 `unsynced → corrected` 修正计算；`clock_drift_ppm`。
+- [x] 单调时钟 ↔ UTC 锚点（启动及每 60 s），`time_synced`、`boot_id`。
+- [x] `wall(o)` 映射函数（含 gap 累加）。
+- [x] 相邻块差分的 gap 估算，阈值 `gap_tolerance_ms`；降级为 `counter/unknown` 的路径。
+- [x] 壁钟阶跃检测（> 1 s）与 `unsynced → corrected` 修正计算；`clock_drift_ppm`。
 
 测试：纯函数单测——多 gap 的 `wall(o)` 往返；时钟阶跃；漂移不影响相邻差分。
 
@@ -231,18 +262,18 @@ flowchart TD
 ### T3.5 WAV 录音器 — L
 依赖：T1.3、T3.4
 
-- [ ] `.partial` 顺序追加（64 KiB 批次），按 `header_flush_interval_seconds` 回写头并 `fdatasync`。
-- [ ] 关闭流程：更新头 → `fdatasync` → 原子 rename → 通知 DB complete。
-- [ ] 路径 `recordings/YYYY/MM/DD/<UTC-start>_<segment-id>.wav`；4 GiB 提前轮转。
+- [x] `.partial` 顺序追加（64 KiB 批次），按 `header_flush_interval_seconds` 回写头并 `fdatasync`。
+- [x] 关闭流程：更新头 → `fdatasync` → 原子 rename → 通知 DB complete。
+- [x] 路径 `recordings/YYYY/MM/DD/<UTC-start>_<segment-id>.wav`；4 GiB 提前轮转。
 - [ ] 写盘落后/磁盘满：丢块并登记 gap，立即告警，不静默丢样本。
-- [ ] 仅支持 1–2 通道 `WAVE_FORMAT_PCM`，其他格式启动失败。
+- [x] 仅支持 1–2 通道 `WAVE_FORMAT_PCM`，其他格式启动失败。
 
 测试：header/字节序/rate/channel/帧数；标准播放器可打开；4 GiB 边界（用小阈值模拟）；磁盘满。
 
 ### T3.6 启动恢复扫描 — M
 依赖：T3.5、T4.1
 
-- [ ] `.partial`：按 `block_align` 截尾、修正头、重命名并置 `interrupted`；无法验证的保持原样并告警。
+- [x] `.partial`：按 `block_align` 截尾、修正头、重命名并置 `interrupted`；无法验证的保持原样并告警。
 - [ ] orphan WAV（有文件无 DB 行）、DB 有行无文件（`missing`）的对账（按 T0.1 结论）。
 - [ ] 恢复后先做一次容量检查。
 
@@ -271,29 +302,29 @@ flowchart TD
 ### T4.1 SQLite 层与迁移 — M
 依赖：T1.1
 
-- [ ] WAL、外键、busy timeout，`PRAGMA user_version` 迁移。
-- [ ] 表：`recording_segments`、`audio_gaps`、`snore_events` 及索引（§7 全部字段）。
-- [ ] 查询接口：按日期区间查 segment/event/gap，更新审核状态。
+- [x] WAL、外键、busy timeout，`PRAGMA user_version` 迁移。
+- [x] 表：`recording_segments`、`audio_gaps`、`snore_events` 及索引（§7 全部字段）。
+- [x] 查询接口：按日期区间查 segment/event/gap，更新审核状态。
 
 测试：迁移幂等；约束（status/review_status 取值）；日期区间边界。
 
 ### T4.2 DB writer 线程 — M
 依赖：T4.1、T1.3
 
-- [ ] 命令队列：`SegmentStarted / SegmentCompleted / Gap / Event`；批量写入，不在采集/DSP 线程里直接操作 DB。
-- [ ] gap 先在内存登记、段关闭时一并落盘。
-- [ ] 写失败的重试与告警。
+- [x] 命令队列：`SegmentStarted / SegmentCompleted / Gap / Event`；批量写入，不在采集/DSP 线程里直接操作 DB。
+- [x] gap 先在内存登记、段关闭时一并落盘。
+- [x] 写失败的重试与告警。
 
 测试：批量顺序性；落库延迟不影响上游；强制写失败后恢复。
 
 ### T4.3 容量统计与回收 `retention.rs` — L
 依赖：T4.1、T3.5、T0.1
 
-- [ ] 统计 recordings 下 WAV/partial 总量（不含 DB/日志）。
-- [ ] 触发点：片段完成后、启动恢复后、周期检查（按 T0.1）。
-- [ ] 按开始时间升序删 complete 文件，直到 ≤ target；不删 recording/partial。
-- [ ] 删除前校验规范化路径在 recordings 根目录内、DB 状态与文件 id 匹配；成功后置 `deleted`，事件与人工标签保留。
-- [ ] 删除失败 → 尝试下一个；仍超限 `storage_pressure=true`；free space 低于 reserve 且清理无效 → 停止录音并告警。
+- [x] 统计 recordings 下 WAV/partial 总量（不含 DB/日志）。
+- [x] 触发点：片段完成后、启动恢复后、周期检查（按 T0.1）。
+- [x] 按开始时间升序删 complete 文件，直到 ≤ target；不删 recording/partial。
+- [x] 删除前校验规范化路径在 recordings 根目录内、DB 状态与文件 id 匹配；成功后置 `deleted`，事件与人工标签保留。
+- [x] 删除失败 → 尝试下一个；仍超限 `storage_pressure=true`；free space 低于 reserve 且清理无效 → 停止录音并告警。
 
 测试：旧到新；仅 complete；路径穿越拒绝；删文件与 DB 状态一致；失败分支。
 
