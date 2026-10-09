@@ -27,3 +27,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Used by the HTTP API integration tests to drive the router in-process.
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
+
+[[bin]]
+name = "detect-wav"
+path = "src/bin/detect-wav.rs"
+required-features = []

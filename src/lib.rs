@@ -8,6 +8,7 @@
 
 pub mod bounded_queue;
 pub mod config;
+pub mod detect_wav;
 pub mod dsp;
 pub mod error;
 pub mod metrics;

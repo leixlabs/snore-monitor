@@ -32,7 +32,6 @@ use std::process::ExitCode;
 /// Stored frames read per I/O call. Large enough that loop overhead disappears
 /// into the DSP, small enough that memory stays flat on long recordings.
 const READ_CHUNK_FRAMES: usize = 4_800;
-
 #[derive(Debug, Parser)]
 #[command(
     name = "detect-wav",
